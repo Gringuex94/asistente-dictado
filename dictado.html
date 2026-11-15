@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#2A1216">
+<title>Dictado · Asistente Docente</title>
+<style>
+  /* Ventana de dictado del Asistente Docente. No guarda ni envía nada a ningún servidor propio:
+     escucha con el dictado del navegador y le devuelve el texto a la app que la abrió. */
+  :root{--b:#8B1E2D;--b2:#2A1216;--fondo:#F6F2F0;--sup:#FFFFFF;--tinta:#1F1A1B;--gris:#6B5B5E;--borde:#DCCFD1;--sobre:#FFFFFF;--ok:#1E5A2F;--okf:#E3F1E6;--mal:#8A2318;--malf:#FBE6E4;--rec:#C0392B;color-scheme:light}
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--fondo);color:var(--tinta);font-size:16px;display:flex;flex-direction:column}
+  header{background:var(--b2);color:var(--sobre);padding:14px 16px;display:flex;align-items:center;gap:10px}
+  header h1{margin:0;font-size:17px}
+  header small{display:block;font-weight:400;font-size:12px;opacity:.8}
+  main{flex:1;display:flex;flex-direction:column;gap:12px;padding:16px;max-width:560px;width:100%;margin:0 auto;min-height:0}
+  .arriba{display:flex;align-items:center;gap:14px}
+  .mic{flex:0 0 auto;width:72px;height:72px;border-radius:999px;border:none;background:var(--b2);display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .mic.on{background:var(--rec);animation:pul 1.2s infinite}
+  @keyframes pul{50%{box-shadow:0 0 0 12px rgba(192,57,43,.15)}}
+  @media (prefers-reduced-motion: reduce){.mic.on{animation:none}}
+  .estado{margin:0;font-weight:600}
+  .estado.mal{color:var(--mal)}
+  .estado.ok{color:var(--ok)}
+  .ayuda{margin:2px 0 0;font-size:13px;color:var(--gris);font-weight:400}
+  textarea{flex:1;min-height:140px;width:100%;font:inherit;border:1px solid var(--borde);border-radius:12px;padding:12px;background:var(--sup);color:var(--tinta);resize:none}
+  .parcial{margin:0;min-height:20px;font-size:14px;color:var(--gris);font-style:italic}
+  .fila{display:flex;flex-wrap:wrap;gap:8px}
+  button.b{border:none;background:var(--b);color:var(--sobre);border-radius:10px;padding:14px 16px;font:600 15px system-ui,sans-serif;min-height:48px;cursor:pointer;flex:1}
+  button.b.sec{background:var(--sup);color:var(--b);border:1px solid var(--b);flex:0 0 auto}
+  button:focus-visible,textarea:focus-visible{outline:3px solid #B35C00;outline-offset:2px}
+  [hidden]{display:none!important}
+</style>
+</head>
+<body>
+<header>
+  <svg width="34" height="34" viewBox="0 0 40 40" aria-hidden="true"><rect width="40" height="40" rx="10" fill="#8B1E2D"/><path d="M11 28 L20 11 L29 28" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M15 22 H25" stroke="#F2B8C0" stroke-width="3" stroke-linecap="round"/><circle cx="29" cy="12" r="3" fill="#F2B8C0"/></svg>
+  <h1>Dictado<small>Asistente Docente</small></h1>
+</header>
+<main>
+  <div class="arriba">
+    <button class="mic" id="mic" aria-label="Empezar o pausar el dictado">
+      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+    </button>
+    <div>
+      <p class="estado" id="estado">Preparando el micrófono…</p>
+      <p class="ayuda" id="ayuda">Decí, por ejemplo: “Núcleo 3, examen 1: Acosta 7, Benítez un 4, Cabrera ausente”.</p>
+    </div>
+  </div>
+  <textarea id="texto" aria-label="Texto dictado" placeholder="Lo que digas aparece acá. Podés corregirlo antes de pasarlo."></textarea>
+  <p class="parcial" id="parcial" aria-live="polite"></p>
+  <div class="fila">
+    <button class="b sec" id="borrar">Borrar</button>
+    <button class="b sec" id="copiar" hidden>Copiar</button>
+    <button class="b" id="listo">Listo · pasar al Asistente</button>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, quiero = false;
+
+function estado(t, clase){ const e=$('estado'); e.textContent=t; e.className='estado'+(clase?' '+clase:''); }
+function pintar(){ $('mic').classList.toggle('on', quiero); if(quiero) estado('Escuchando… hablá tranquilo, las pausas no cortan'); }
+function agregar(t){
+  const a=$('texto'), v=a.value;
+  a.value = (v && !/\s$/.test(v) ? v+' ' : v) + t.trim();
+  a.scrollTop = a.scrollHeight;
+}
+
+/* El dictado del navegador se corta solo con los silencios: se vuelve a enganchar hasta que la persona lo pausa. */
+function arrancar(){
+  rec = new SR(); rec.lang='es-AR'; rec.continuous=true; rec.interimResults=true;
+  rec.onresult = e => {
+    let parcial='';
+    for(let k=e.resultIndex; k<e.results.length; k++){
+      const t=e.results[k][0].transcript;
+      if(e.results[k].isFinal) agregar(t); else parcial+=t;
+    }
+    $('parcial').textContent = parcial;
+  };
+  rec.onerror = e => {
+    if(e.error==='no-speech' || e.error==='aborted') return;
+    quiero=false; pintar();
+    if(e.error==='not-allowed' || e.error==='service-not-allowed') estado('El navegador no tiene permiso para usar el micrófono. Habilitalo desde el ícono a la izquierda de la dirección y tocá el botón.', 'mal');
+    else if(e.error==='audio-capture') estado('No encuentro un micrófono conectado.', 'mal');
+    else if(e.error==='network') estado('El dictado necesita internet. Revisá la conexión y tocá el botón.', 'mal');
+    else estado('No pude escuchar ('+e.error+'). Tocá el botón para probar de nuevo.', 'mal');
+  };
+  rec.onend = () => {
+    $('parcial').textContent='';
+    if(!quiero) return pintar();
+    try{ arrancar(); }catch(err){ quiero=false; pintar(); estado('El dictado se cortó. Tocá el botón para seguir.', 'mal'); }
+  };
+  rec.start();
+}
+function empezar(){
+  if(!SR) return estado('Este navegador no tiene dictado. Abrí el Asistente en Chrome.', 'mal');
+  quiero=true; pintar();
+  try{ arrancar(); }catch(err){ quiero=false; pintar(); estado('Tocá el botón del micrófono para empezar.'); }
+}
+function pausar(){ quiero=false; try{ rec && rec.stop(); }catch(err){} pintar(); estado('En pausa. Tocá el botón para seguir dictando.'); }
+
+$('mic').onclick = () => quiero ? pausar() : empezar();
+$('borrar').onclick = () => { $('texto').value=''; $('parcial').textContent=''; $('texto').focus(); };
+
+/* Sin camino de vuelta a la app: queda el texto para copiar y pegar. */
+function sinVuelta(){
+  $('copiar').hidden=false;
+  estado('No pude pasar el texto solo. Tocá Copiar y pegalo en el recuadro del Asistente.', 'mal');
+}
+$('copiar').onclick = async () => {
+  const a=$('texto');
+  try{ await navigator.clipboard.writeText(a.value); estado('Copiado. Volvé al Asistente y pegalo en el recuadro.', 'ok'); }
+  catch(err){ a.focus(); a.select(); estado('Seleccioné el texto: copialo con Ctrl + C.', 'ok'); }
+};
+
+$('listo').onclick = () => {
+  quiero=false; try{ rec && rec.stop(); }catch(err){} pintar();
+  const texto=$('texto').value.trim();
+  if(!texto) return estado('Todavía no hay nada dictado.', 'mal');
+  if(!window.opener) return sinVuelta();
+  let ok=false;
+  window.addEventListener('message', e => {
+    if(e.source!==window.opener || !e.data || e.data.tipo!=='dictado-ok') return;
+    ok=true; estado('Listo: el texto ya está en el Asistente. Podés cerrar esta ventana.', 'ok');
+    window.close();
+  });
+  // El texto solo le llega a la ventana que abrió esta página. Esa ventana comprueba de dónde viene antes de aceptarlo.
+  try{ window.opener.postMessage({tipo:'dictado', texto:texto}, '*'); }catch(err){}
+  setTimeout(() => { if(!ok) sinVuelta(); }, 1500);
+};
+
+empezar();
+</script>
+</body>
+</html>
