@@ -31,6 +31,7 @@
   button.b{border:none;background:var(--b);color:var(--sobre);border-radius:10px;padding:14px 16px;font:600 15px system-ui,sans-serif;min-height:48px;cursor:pointer;flex:1}
   button.b.sec{background:var(--sup);color:var(--b);border:1px solid var(--b);flex:0 0 auto}
   button:focus-visible,textarea:focus-visible{outline:3px solid #B35C00;outline-offset:2px}
+  .diag{margin:0;font-size:12px;color:var(--gris);font-family:ui-monospace,Consolas,monospace}
   [hidden]{display:none!important}
 </style>
 </head>
@@ -46,7 +47,7 @@
     </button>
     <div>
       <p class="estado" id="estado">Preparando el micrófono…</p>
-      <p class="ayuda" id="ayuda">Decí, por ejemplo: “Núcleo 3, examen 1: Acosta 7, Benítez un 4, Cabrera ausente”.</p>
+      <p class="ayuda" id="ayuda">Primero, dónde va: <b>“Núcleo 5, examen 2”</b>.<br>Después, cada estudiante: <b>“Acosta 8, Benítez 7, Cabrera ausente”</b>.</p>
     </div>
   </div>
   <textarea id="texto" aria-label="Texto dictado" placeholder="Lo que digas aparece acá. Podés corregirlo antes de pasarlo."></textarea>
@@ -56,12 +57,16 @@
     <button class="b sec" id="copiar" hidden>Copiar</button>
     <button class="b" id="listo">Listo · pasar al Asistente</button>
   </div>
+  <p class="diag" id="diag" aria-hidden="true"></p>
 </main>
 
 <script>
 const $ = id => document.getElementById(id);
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, quiero = false;
+/* Diagnóstico: qué etapas del dictado llegaron a ocurrir. Sirve para saber dónde se corta cuando no escribe. */
+const D = { inicios:0, audio:0, sonido:0, voz:0, resultados:0, cortes:0, error:'' };
+function diag(){ $('diag').textContent = `v4 · inicios ${D.inicios} · audio ${D.audio} · sonido ${D.sonido} · voz ${D.voz} · resultados ${D.resultados} · cortes ${D.cortes}${D.error?' · último aviso: '+D.error:''}`; }
 
 function estado(t, clase){ const e=$('estado'); e.textContent=t; e.className='estado'+(clase?' '+clase:''); }
 function pintar(){ $('mic').classList.toggle('on', quiero); if(quiero) estado('Escuchando… hablá tranquilo, las pausas no cortan'); }
@@ -74,7 +79,13 @@ function agregar(t){
 /* El dictado del navegador se corta solo con los silencios: se vuelve a enganchar hasta que la persona lo pausa. */
 function arrancar(){
   rec = new SR(); rec.lang='es-AR'; rec.continuous=true; rec.interimResults=true;
+  rec.onstart = () => { D.inicios++; diag(); };
+  rec.onaudiostart = () => { D.audio++; diag(); };
+  rec.onsoundstart = () => { D.sonido++; diag(); };
+  rec.onspeechstart = () => { D.voz++; diag(); if(quiero) estado('Te estoy oyendo…'); };
+  rec.onspeechend = () => { if(quiero) estado('Escuchando… hablá tranquilo, las pausas no cortan'); };
   rec.onresult = e => {
+    D.resultados++; diag();
     let parcial='';
     for(let k=e.resultIndex; k<e.results.length; k++){
       const t=e.results[k][0].transcript;
@@ -83,6 +94,7 @@ function arrancar(){
     $('parcial').textContent = parcial;
   };
   rec.onerror = e => {
+    D.error=e.error; diag();
     if(e.error==='no-speech' || e.error==='aborted') return;
     quiero=false; pintar();
     if(e.error==='not-allowed' || e.error==='service-not-allowed') estado('El navegador no tiene permiso para usar el micrófono. Habilitalo desde el ícono a la izquierda de la dirección y tocá el botón.', 'mal');
@@ -92,8 +104,10 @@ function arrancar(){
   };
   rec.onend = () => {
     $('parcial').textContent='';
+    D.cortes++; diag();
     if(!quiero) return pintar();
-    try{ arrancar(); }catch(err){ quiero=false; pintar(); estado('El dictado se cortó. Tocá el botón para seguir.', 'mal'); }
+    // Se vuelve a enganchar con una pausa corta: arrancar pegado al corte hace que Chrome lo aborte.
+    setTimeout(() => { if(!quiero) return; try{ arrancar(); }catch(err){ quiero=false; pintar(); estado('El dictado se cortó. Tocá el botón para seguir.', 'mal'); } }, 300);
   };
   rec.start();
 }
@@ -111,6 +125,12 @@ $('borrar').onclick = () => { $('texto').value=''; $('parcial').textContent=''; 
 function sinVuelta(){
   $('copiar').hidden=false;
   estado('No pude pasar el texto solo. Tocá Copiar y pegalo en el recuadro del Asistente.', 'mal');
+}
+/* En el celular a veces el texto SÍ llega, pero la confirmación tarda (la pestaña del Asistente está en segundo plano).
+   Por eso no se habla de error: se pide volver y mirar; Copiar queda por si hace falta. */
+function sinConfirmar(){
+  $('copiar').hidden=false;
+  estado('Texto enviado. Volvé a la pestaña del Asistente: si NO aparece en el recuadro, volvé acá, tocá Copiar y pegalo. (No lo pegues si ya apareció.)', 'ok');
 }
 $('copiar').onclick = async () => {
   const a=$('texto');
@@ -130,10 +150,12 @@ $('listo').onclick = () => {
     window.close();
   });
   // El texto solo le llega a la ventana que abrió esta página. Esa ventana comprueba de dónde viene antes de aceptarlo.
-  try{ window.opener.postMessage({tipo:'dictado', texto:texto}, '*'); }catch(err){}
-  setTimeout(() => { if(!ok) sinVuelta(); }, 1500);
+  try{ window.opener.postMessage({tipo:'dictado', texto:texto}, '*'); }catch(err){ return sinVuelta(); }
+  try{ window.opener.focus(); }catch(err){}
+  setTimeout(() => { if(!ok) sinConfirmar(); }, 4000);
 };
 
+diag();
 empezar();
 </script>
 </body>
